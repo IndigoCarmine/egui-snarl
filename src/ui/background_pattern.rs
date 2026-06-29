@@ -2,6 +2,64 @@ use egui::{emath::Rot2, vec2, Painter, Rect, Style, Vec2};
 
 use super::SnarlStyle;
 
+/// Dotted background pattern.
+/// A dot is drawn at each grid intersection.
+/// Use `SnarlStyle::background_pattern_stroke` to change dot color (stroke color is used as fill).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "egui-probe", derive(egui_probe::EguiProbe))]
+pub struct Dots {
+    /// Spacing between dots.
+    pub spacing: Vec2,
+
+    /// Radius of each dot in graph space.
+    pub radius: f32,
+}
+
+const DEFAULT_DOTS_RADIUS: f32 = 1.0;
+
+impl Default for Dots {
+    fn default() -> Self {
+        Self {
+            spacing: DEFAULT_GRID_SPACING,
+            radius: DEFAULT_DOTS_RADIUS,
+        }
+    }
+}
+
+impl Dots {
+    /// Create new dotted pattern with given spacing and dot radius.
+    #[must_use]
+    pub const fn new(spacing: Vec2, radius: f32) -> Self {
+        Self { spacing, radius }
+    }
+
+    fn draw(&self, viewport: &Rect, snarl_style: &SnarlStyle, style: &Style, painter: &Painter) {
+        let bg_stroke = snarl_style.get_bg_pattern_stroke(style);
+        let color = bg_stroke.color;
+
+        let spacing = vec2(self.spacing.x.max(1.0), self.spacing.y.max(1.0));
+        let radius = self.radius.max(0.1);
+
+        let min_x = (viewport.min.x / spacing.x).ceil();
+        let max_x = (viewport.max.x / spacing.x).floor();
+        let min_y = (viewport.min.y / spacing.y).ceil();
+        let max_y = (viewport.max.y / spacing.y).floor();
+
+        #[allow(clippy::cast_possible_truncation)]
+        for ix in 0..=f32::ceil(max_x - min_x) as i64 {
+            #[allow(clippy::cast_precision_loss)]
+            let x = (ix as f32 + min_x) * spacing.x;
+            #[allow(clippy::cast_possible_truncation)]
+            for iy in 0..=f32::ceil(max_y - min_y) as i64 {
+                #[allow(clippy::cast_precision_loss)]
+                let y = (iy as f32 + min_y) * spacing.y;
+                painter.circle_filled(vec2(x, y).to_pos2(), radius, color);
+            }
+        }
+    }
+}
+
 ///Grid background pattern.
 ///Use `SnarlStyle::background_pattern_stroke` for change stroke options
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -97,11 +155,16 @@ pub enum BackgroundPattern {
     /// Linear grid.
     #[cfg_attr(feature = "egui-probe", egui_probe(transparent))]
     Grid(Grid),
+
+    /// Dotted grid.
+    #[cfg_attr(feature = "egui-probe", egui_probe(transparent))]
+    Dots(Dots),
 }
 
 impl Default for BackgroundPattern {
     fn default() -> Self {
-        BackgroundPattern::new()
+        // Dotted grid, matching the default node-graph look.
+        BackgroundPattern::dots(DEFAULT_GRID_SPACING, 1.2)
     }
 }
 
@@ -124,6 +187,12 @@ impl BackgroundPattern {
         Self::Grid(Grid::new(spacing, angle))
     }
 
+    /// Create new dotted background pattern with given spacing and dot radius.
+    #[must_use]
+    pub const fn dots(spacing: Vec2, radius: f32) -> Self {
+        Self::Dots(Dots::new(spacing, radius))
+    }
+
     /// Draws background pattern.
     pub fn draw(
         &self,
@@ -134,6 +203,7 @@ impl BackgroundPattern {
     ) {
         match self {
             BackgroundPattern::Grid(g) => g.draw(viewport, snarl_style, style, painter),
+            BackgroundPattern::Dots(d) => d.draw(viewport, snarl_style, style, painter),
             BackgroundPattern::NoPattern => {}
         }
     }

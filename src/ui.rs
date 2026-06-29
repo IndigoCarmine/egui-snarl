@@ -32,7 +32,7 @@ use self::{
 };
 
 pub use self::{
-    background_pattern::{BackgroundPattern, Grid},
+    background_pattern::{BackgroundPattern, Dots, Grid},
     pin::{AnyPins, PinInfo, PinShape, PinWireInfo, SnarlPin},
     state::get_selected_nodes,
     viewer::SnarlViewer,
@@ -565,27 +565,84 @@ pub struct SnarlStyle {
     pub _non_exhaustive: (),
 }
 
+// Default node-graph appearance (the "Graph Editor" look).
+// These are the values used when a `SnarlStyle` field is left as `None`.
+/// Base node surface color.
+const DEFAULT_NODE_FILL: Color32 = Color32::from_rgb(0x26, 0x2b, 0x33);
+/// Node frame border color.
+const DEFAULT_NODE_STROKE: Color32 = Color32::from_rgb(0x3c, 0x43, 0x4f);
+/// Canvas background color.
+const DEFAULT_BG_FILL: Color32 = Color32::from_rgb(0x0f, 0x11, 0x15);
+/// Muted fill for unconnected pins.
+const DEFAULT_PIN_FILL: Color32 = Color32::from_rgb(0x3a, 0x43, 0x50);
+
+/// Default frame used to draw node bodies.
+fn default_node_frame() -> Frame {
+    Frame {
+        inner_margin: Margin::same(0),
+        outer_margin: Margin {
+            left: 0,
+            right: 0,
+            top: 0,
+            bottom: 4,
+        },
+        corner_radius: CornerRadius::same(8),
+        fill: DEFAULT_NODE_FILL,
+        stroke: Stroke::new(1.0, DEFAULT_NODE_STROKE),
+        shadow: Shadow {
+            offset: [0, 8],
+            blur: 22,
+            spread: 0,
+            color: Color32::from_black_alpha(115),
+        },
+    }
+}
+
+/// Default frame used to draw the canvas background.
+fn default_bg_frame() -> Frame {
+    Frame {
+        inner_margin: Margin::ZERO,
+        outer_margin: Margin::ZERO,
+        corner_radius: CornerRadius::ZERO,
+        fill: DEFAULT_BG_FILL,
+        stroke: Stroke::NONE,
+        shadow: Shadow::NONE,
+    }
+}
+
+/// Default frame used to draw node headers (top corners rounded, no shadow).
+fn default_header_frame() -> Frame {
+    Frame {
+        inner_margin: Margin::symmetric(11, 6),
+        outer_margin: Margin::ZERO,
+        corner_radius: CornerRadius {
+            nw: 8,
+            ne: 8,
+            sw: 0,
+            se: 0,
+        },
+        fill: DEFAULT_NODE_FILL,
+        stroke: Stroke::NONE,
+        shadow: Shadow::NONE,
+    }
+}
+
 impl SnarlStyle {
     fn get_node_layout(&self) -> NodeLayout {
         self.node_layout.unwrap_or_default()
     }
 
-    fn get_pin_size(&self, style: &Style) -> f32 {
-        self.pin_size.unwrap_or(style.spacing.interact_size.y * 0.6)
+    fn get_pin_size(&self, _style: &Style) -> f32 {
+        self.pin_size.unwrap_or(6.5)
     }
 
-    fn get_pin_fill(&self, style: &Style) -> Color32 {
-        self.pin_fill
-            .unwrap_or(style.visuals.widgets.active.bg_fill)
+    fn get_pin_fill(&self, _style: &Style) -> Color32 {
+        self.pin_fill.unwrap_or(DEFAULT_PIN_FILL)
     }
 
-    fn get_pin_stroke(&self, style: &Style) -> Stroke {
-        self.pin_stroke.unwrap_or_else(|| {
-            Stroke::new(
-                style.visuals.widgets.active.bg_stroke.width,
-                style.visuals.widgets.active.bg_stroke.color,
-            )
-        })
+    fn get_pin_stroke(&self, _style: &Style) -> Stroke {
+        self.pin_stroke
+            .unwrap_or_else(|| Stroke::new(2.0, DEFAULT_BG_FILL))
     }
 
     fn get_pin_shape(&self) -> PinShape {
@@ -593,17 +650,15 @@ impl SnarlStyle {
     }
 
     fn get_pin_placement(&self) -> PinPlacement {
-        self.pin_placement.unwrap_or_default()
+        self.pin_placement.unwrap_or(PinPlacement::Edge)
     }
 
-    fn get_wire_width(&self, style: &Style) -> f32 {
-        self.wire_width
-            .unwrap_or_else(|| self.get_pin_size(style) * 0.1)
+    fn get_wire_width(&self, _style: &Style) -> f32 {
+        self.wire_width.unwrap_or(2.0)
     }
 
-    fn get_wire_frame_size(&self, style: &Style) -> f32 {
-        self.wire_frame_size
-            .unwrap_or_else(|| self.get_pin_size(style) * 3.0)
+    fn get_wire_frame_size(&self, _style: &Style) -> f32 {
+        self.wire_frame_size.unwrap_or(8.0)
     }
 
     fn get_downscale_wire_frame(&self) -> bool {
@@ -631,13 +686,17 @@ impl SnarlStyle {
         self.collapsible.unwrap_or(true)
     }
 
-    fn get_bg_frame(&self, style: &Style) -> Frame {
-        self.bg_frame.unwrap_or_else(|| Frame::canvas(style))
+    fn get_bg_frame(&self, _style: &Style) -> Frame {
+        self.bg_frame.unwrap_or_else(default_bg_frame)
     }
 
-    fn get_bg_pattern_stroke(&self, style: &Style) -> Stroke {
+    fn get_bg_pattern(&self) -> BackgroundPattern {
+        self.bg_pattern.unwrap_or_default()
+    }
+
+    fn get_bg_pattern_stroke(&self, _style: &Style) -> Stroke {
         self.bg_pattern_stroke
-            .unwrap_or(style.visuals.widgets.noninteractive.bg_stroke)
+            .unwrap_or_else(|| Stroke::new(1.0, Color32::from_white_alpha(12)))
     }
 
     fn get_min_scale(&self) -> f32 {
@@ -648,13 +707,12 @@ impl SnarlStyle {
         self.max_scale.unwrap_or(2.0)
     }
 
-    fn get_node_frame(&self, style: &Style) -> Frame {
-        self.node_frame.unwrap_or_else(|| Frame::window(style))
+    fn get_node_frame(&self, _style: &Style) -> Frame {
+        self.node_frame.unwrap_or_else(default_node_frame)
     }
 
-    fn get_header_frame(&self, style: &Style) -> Frame {
-        self.header_frame
-            .unwrap_or_else(|| self.get_node_frame(style).shadow(Shadow::NONE))
+    fn get_header_frame(&self, _style: &Style) -> Frame {
+        self.header_frame.unwrap_or_else(default_header_frame)
     }
 
     fn get_centering(&self) -> bool {
@@ -1018,8 +1076,9 @@ where
     // Map latest pointer position to graph space.
     latest_pos = latest_pos.map(|pos| from_global * pos);
 
+    let bg_pattern = style.get_bg_pattern();
     viewer.draw_background(
-        style.bg_pattern.as_ref(),
+        Some(&bg_pattern),
         &viewport,
         &style,
         ui.style(),
@@ -2401,15 +2460,27 @@ where
 
         let mut header_frame_rect = Rect::NAN; //node_rect + header_frame.total_margin();
 
-        // Show node's header
+        // Show node's header.
+        //
+        // The header frame is spanned across exactly the rounded node rect so
+        // its background lines up with the node body frame below (drawn at
+        // `node_frame_rect.round_ui()`, horizontally identical to
+        // `node_rect.round_ui()`). The frame paints at `content + inner_margin`,
+        // so the content is forced to `node_width - inner_margin_x` and the
+        // frame is left-anchored at the node's left edge — giving the header
+        // bar and the body box one continuous outline on both sides.
+        let header_node_rect = node_rect.round_ui();
+        let header_inner_x =
+            header_frame.inner_margin.leftf() + header_frame.inner_margin.rightf();
         let header_ui: &mut Ui = &mut ui.new_child(
             UiBuilder::new()
-                .max_rect(node_rect.round_ui() + header_frame.total_margin())
-                .layout(Layout::top_down(Align::Center))
+                .max_rect(header_node_rect)
+                .layout(Layout::top_down(Align::Min))
                 .id_salt("header"),
         );
 
         header_frame.show(header_ui, |ui: &mut Ui| {
+            ui.set_min_width((header_node_rect.width() - header_inner_x).max(0.0));
             ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
                 if style.get_collapsible() {
                     let (_, r) = ui.allocate_exact_size(
@@ -2432,14 +2503,6 @@ where
             });
 
             header_frame_rect = header_rect + header_frame.total_margin();
-
-            ui.advance_cursor_after_rect(Rect::from_min_max(
-                header_rect.min,
-                pos2(
-                    f32::max(header_rect.max.x, node_rect.max.x),
-                    header_rect.min.y,
-                ),
-            ));
         });
 
         ui.expand_to_include_rect(header_rect);
@@ -2447,7 +2510,10 @@ where
         node_state.set_header_height(header_size.y);
 
         node_state.set_size(vec2(
-            f32::max(header_size.x, new_pins_size.x),
+            // `header_size.x` is the header *content* width; the header bar is
+            // painted with its inner margin on top, so the node must be at
+            // least that wide for the bar and the body box to share edges.
+            f32::max(header_size.x + header_inner_x, new_pins_size.x),
             header_size.y
                 + header_frame.total_margin().bottom
                 + ui.spacing().item_spacing.y

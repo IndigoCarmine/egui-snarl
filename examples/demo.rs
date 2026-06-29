@@ -7,15 +7,37 @@ use egui::{Color32, Id, Ui};
 use egui_snarl::{
     InPin, InPinId, NodeId, OutPin, OutPinId, Snarl,
     ui::{
-        AnyPins, NodeLayout, PinInfo, PinPlacement, SnarlStyle, SnarlViewer, SnarlWidget,
+        AnyPins, NodeLayout, PinInfo, SnarlStyle, SnarlViewer, SnarlWidget,
         WireStyle, get_selected_nodes,
     },
 };
 
-const STRING_COLOR: Color32 = Color32::from_rgb(0x00, 0xb0, 0x00);
-const NUMBER_COLOR: Color32 = Color32::from_rgb(0xb0, 0x00, 0x00);
-const IMAGE_COLOR: Color32 = Color32::from_rgb(0xb0, 0x00, 0xb0);
-const UNTYPED_COLOR: Color32 = Color32::from_rgb(0xb0, 0xb0, 0xb0);
+// Palette from the "Graph Editor" design.
+// Port / wire colors are keyed by data type.
+const NUMBER_COLOR: Color32 = Color32::from_rgb(0x6f, 0xcf, 0x7d); // float — green
+const STRING_COLOR: Color32 = Color32::from_rgb(0x4f, 0xb6, 0xc4); // string — teal/int
+const IMAGE_COLOR: Color32 = Color32::from_rgb(0xa9, 0x8b, 0xd9); // image — purple/vec
+const UNTYPED_COLOR: Color32 = Color32::from_rgb(0x86, 0x8e, 0x9c); // any — grey
+
+// Per-category accent used to tint node headers.
+const CAT_CONSTANT: Color32 = Color32::from_rgb(0x5f, 0xb8, 0x7a); // green
+const CAT_EXPR: Color32 = Color32::from_rgb(0x5b, 0x8d, 0xd6); // blue
+const CAT_STRING: Color32 = Color32::from_rgb(0xe0, 0xb2, 0x4d); // gold
+const CAT_IMAGE: Color32 = Color32::from_rgb(0xa9, 0x8b, 0xd9); // purple
+const CAT_SINK: Color32 = Color32::from_rgb(0xd9, 0x8a, 0x78); // salmon
+
+// Base node surface color (#262b33).
+const NODE_FILL: Color32 = Color32::from_rgb(0x26, 0x2b, 0x33);
+
+/// Blend `accent` over `base` at the given ratio (0..=1), à la CSS `color-mix`.
+fn mix(accent: Color32, base: Color32, ratio: f32) -> Color32 {
+    let lerp = |a: u8, b: u8| (f32::from(b) + (f32::from(a) - f32::from(b)) * ratio) as u8;
+    Color32::from_rgb(
+        lerp(accent.r(), base.r()),
+        lerp(accent.g(), base.g()),
+        lerp(accent.b(), base.b()),
+    )
+}
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 enum DemoNode {
@@ -33,6 +55,10 @@ enum DemoNode {
     /// Converts URI to Image
     ShowImage(String),
 
+    /// Vector node with three editable float inputs (X/Y/Z) and a single
+    /// vector output. Mirrors the "Vec3" node from the Graph Editor design.
+    Vec3([f64; 3]),
+
     /// Expression node with a single output.
     /// It has number of inputs equal to number of variables in the expression.
     ExprNode(ExprNode),
@@ -46,6 +72,7 @@ impl DemoNode {
             DemoNode::String(_) => "String",
             DemoNode::ShowImage(_) => "ShowImage",
             DemoNode::ExprNode(_) => "ExprNode",
+            DemoNode::Vec3(_) => "Vec3",
         }
     }
 
@@ -113,6 +140,16 @@ impl SnarlViewer<DemoNode> for DemoViewer {
             (_, DemoNode::String(_)) => {
                 unreachable!("String node has no inputs")
             }
+            // Vec3 inputs accept scalar floats (Number / Expr); everything else
+            // dropped on a Vec3 input is rejected.
+            (DemoNode::Number(_) | DemoNode::ExprNode(_), DemoNode::Vec3(_)) => {}
+            (_, DemoNode::Vec3(_)) => {
+                return;
+            }
+            // Vec3 outputs a vector, which only a Sink can display.
+            (DemoNode::Vec3(_), DemoNode::ShowImage(_) | DemoNode::ExprNode(_)) => {
+                return;
+            }
             (DemoNode::Number(_), DemoNode::ShowImage(_)) => {
                 return;
             }
@@ -154,6 +191,7 @@ impl SnarlViewer<DemoNode> for DemoViewer {
             DemoNode::String(_) => "String".to_owned(),
             DemoNode::ShowImage(_) => "Show image".to_owned(),
             DemoNode::ExprNode(_) => "Expr".to_owned(),
+            DemoNode::Vec3(_) => "Vec3".to_owned(),
         }
     }
 
@@ -162,6 +200,7 @@ impl SnarlViewer<DemoNode> for DemoViewer {
             DemoNode::Sink | DemoNode::ShowImage(_) => 1,
             DemoNode::Number(_) | DemoNode::String(_) => 0,
             DemoNode::ExprNode(expr_node) => 1 + expr_node.bindings.len(),
+            DemoNode::Vec3(_) => 3,
         }
     }
 
@@ -171,7 +210,23 @@ impl SnarlViewer<DemoNode> for DemoViewer {
             DemoNode::Number(_)
             | DemoNode::String(_)
             | DemoNode::ShowImage(_)
-            | DemoNode::ExprNode(_) => 1,
+            | DemoNode::ExprNode(_)
+            | DemoNode::Vec3(_) => 1,
+        }
+    }
+
+    fn node_layout(
+        &mut self,
+        default: NodeLayout,
+        node: NodeId,
+        _inputs: &[InPin],
+        _outputs: &[OutPin],
+        snarl: &Snarl<DemoNode>,
+    ) -> NodeLayout {
+        // Stack the Vec3 output beneath its X/Y/Z inputs, like the design.
+        match snarl[node] {
+            DemoNode::Vec3(_) => NodeLayout::sandwich(),
+            _ => default,
         }
     }
 
@@ -215,6 +270,16 @@ impl SnarlViewer<DemoNode> for DemoViewer {
                             let image = egui::Image::new(uri).show_loading_spinner(true);
                             ui.add(image);
 
+                            PinInfo::circle().with_fill(IMAGE_COLOR)
+                        }
+                        DemoNode::Vec3(v) => {
+                            assert_eq!(remote.output, 0, "Vec3 node has only one output");
+                            ui.label(format!(
+                                "({}, {}, {})",
+                                format_float(v[0]),
+                                format_float(v[1]),
+                                format_float(v[2]),
+                            ));
                             PinInfo::circle().with_fill(IMAGE_COLOR)
                         }
                     },
@@ -261,6 +326,32 @@ impl SnarlViewer<DemoNode> for DemoViewer {
                 }
                 _ => unreachable!("Sink input has only one wire"),
             },
+            DemoNode::Vec3(_) => {
+                const LABELS: [&str; 3] = ["X", "Y", "Z"];
+                let idx = pin.id.input;
+                ui.label(LABELS[idx]);
+
+                match &*pin.remotes {
+                    [] => {
+                        let DemoNode::Vec3(v) = &mut snarl[pin.id.node] else {
+                            unreachable!()
+                        };
+                        ui.add(egui::DragValue::new(&mut v[idx]).speed(0.1));
+                        // Unconnected: muted pin (style's default fill shows through).
+                        PinInfo::circle().with_fill(UNTYPED_COLOR)
+                    }
+                    [remote] => {
+                        let new_value = snarl[remote.node].number_out();
+                        let DemoNode::Vec3(v) = &mut snarl[pin.id.node] else {
+                            unreachable!()
+                        };
+                        v[idx] = new_value;
+                        ui.label(format_float(new_value));
+                        PinInfo::circle().with_fill(NUMBER_COLOR)
+                    }
+                    _ => unreachable!("Vec3 input has only one wire"),
+                }
+            }
             DemoNode::ExprNode(_) if pin.id.input == 0 => {
                 let changed = match &*pin.remotes {
                     [] => {
@@ -418,6 +509,11 @@ impl SnarlViewer<DemoNode> for DemoViewer {
                 ui.allocate_at_least(egui::Vec2::ZERO, egui::Sense::hover());
                 PinInfo::circle().with_fill(IMAGE_COLOR)
             }
+            DemoNode::Vec3(_) => {
+                assert_eq!(pin.id.output, 0, "Vec3 node has only one output");
+                ui.label("Vector");
+                PinInfo::circle().with_fill(IMAGE_COLOR)
+            }
         }
     }
 
@@ -441,6 +537,10 @@ impl SnarlViewer<DemoNode> for DemoViewer {
         }
         if ui.button("Show image").clicked() {
             snarl.insert_node(pos, DemoNode::ShowImage(String::new()));
+            ui.close();
+        }
+        if ui.button("Vec3").clicked() {
+            snarl.insert_node(pos, DemoNode::Vec3([0.0; 3]));
             ui.close();
         }
         if ui.button("Sink").clicked() {
@@ -470,7 +570,8 @@ impl SnarlViewer<DemoNode> for DemoViewer {
         const PIN_NUM: PinCompat = 1;
         const PIN_STR: PinCompat = 2;
         const PIN_IMG: PinCompat = 4;
-        const PIN_SINK: PinCompat = PIN_NUM | PIN_STR | PIN_IMG;
+        const PIN_VEC: PinCompat = 8;
+        const PIN_SINK: PinCompat = PIN_NUM | PIN_STR | PIN_IMG | PIN_VEC;
 
         const fn pin_out_compat(node: &DemoNode) -> PinCompat {
             match node {
@@ -478,6 +579,8 @@ impl SnarlViewer<DemoNode> for DemoViewer {
                 DemoNode::String(_) => PIN_STR,
                 DemoNode::ShowImage(_) => PIN_IMG,
                 DemoNode::Number(_) | DemoNode::ExprNode(_) => PIN_NUM,
+                // Vec3 outputs a vector; only the Sink consumes it here.
+                DemoNode::Vec3(_) => PIN_VEC,
             }
         }
 
@@ -493,6 +596,8 @@ impl SnarlViewer<DemoNode> for DemoViewer {
                         PIN_NUM
                     }
                 }
+                // Vec3's X/Y/Z inputs accept scalar floats.
+                DemoNode::Vec3(_) => PIN_NUM,
             }
         }
 
@@ -593,6 +698,27 @@ impl SnarlViewer<DemoNode> for DemoViewer {
         }
     }
 
+    fn header_frame(
+        &mut self,
+        frame: egui::Frame,
+        node: NodeId,
+        _inputs: &[InPin],
+        _outputs: &[OutPin],
+        snarl: &Snarl<DemoNode>,
+    ) -> egui::Frame {
+        let accent = match snarl[node] {
+            DemoNode::Sink => CAT_SINK,
+            DemoNode::Number(_) => CAT_CONSTANT,
+            DemoNode::String(_) => CAT_STRING,
+            DemoNode::ShowImage(_) => CAT_IMAGE,
+            DemoNode::ExprNode(_) => CAT_EXPR,
+            DemoNode::Vec3(_) => CAT_IMAGE,
+        };
+        // Header background is the accent mixed lightly over the node surface
+        // (design's `color-mix(accent 22%, surface)`).
+        frame.fill(mix(accent, NODE_FILL, 0.22))
+    }
+
     fn has_on_hover_popup(&mut self, _: &DemoNode) -> bool {
         true
     }
@@ -621,25 +747,12 @@ impl SnarlViewer<DemoNode> for DemoViewer {
             DemoNode::ExprNode(_) => {
                 ui.label("Evaluates algebraic expression with input for each unique variable name");
             }
+            DemoNode::Vec3(_) => {
+                ui.label("Builds a 3-component vector from X, Y and Z inputs");
+            }
         }
     }
 
-    fn header_frame(
-        &mut self,
-        frame: egui::Frame,
-        node: NodeId,
-        _inputs: &[InPin],
-        _outputs: &[OutPin],
-        snarl: &Snarl<DemoNode>,
-    ) -> egui::Frame {
-        match snarl[node] {
-            DemoNode::Sink => frame.fill(egui::Color32::from_rgb(70, 70, 80)),
-            DemoNode::Number(_) => frame.fill(egui::Color32::from_rgb(70, 40, 40)),
-            DemoNode::String(_) => frame.fill(egui::Color32::from_rgb(40, 70, 40)),
-            DemoNode::ShowImage(_) => frame.fill(egui::Color32::from_rgb(40, 40, 70)),
-            DemoNode::ExprNode(_) => frame.fill(egui::Color32::from_rgb(70, 66, 40)),
-        }
-    }
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -931,48 +1044,75 @@ pub struct DemoApp {
     style: SnarlStyle,
 }
 
-const fn default_style() -> SnarlStyle {
-    SnarlStyle {
-        node_layout: Some(NodeLayout::coil()),
-        pin_placement: Some(PinPlacement::Edge),
-        pin_size: Some(7.0),
-        node_frame: Some(egui::Frame {
-            inner_margin: egui::Margin::same(8),
-            outer_margin: egui::Margin {
-                left: 0,
-                right: 0,
-                top: 0,
-                bottom: 4,
-            },
-            corner_radius: egui::CornerRadius::same(8),
-            fill: egui::Color32::from_gray(30),
-            stroke: egui::Stroke::NONE,
-            shadow: egui::Shadow::NONE,
-        }),
-        bg_frame: Some(egui::Frame {
-            inner_margin: egui::Margin::ZERO,
-            outer_margin: egui::Margin::same(2),
-            corner_radius: egui::CornerRadius::ZERO,
-            fill: egui::Color32::from_gray(40),
-            stroke: egui::Stroke::NONE,
-            shadow: egui::Shadow::NONE,
-        }),
-        ..SnarlStyle::new()
+/// A small sample graph mirroring the "Graph Editor" design:
+/// constants feeding an expression into a sink, plus a standalone expression.
+fn default_snarl() -> Snarl<DemoNode> {
+    use egui::pos2;
+
+    let mut snarl = Snarl::new();
+
+    // Row 1: two constants -> Expr (a + b) -> Sink.
+    let c1 = snarl.insert_node(pos2(40.0, 30.0), DemoNode::Number(2.0));
+    let c2 = snarl.insert_node(pos2(40.0, 150.0), DemoNode::Number(7.6));
+    let mut add = ExprNode::new();
+    add.text = "a + b".to_owned();
+    add.bindings = vec!["a".to_owned(), "b".to_owned()];
+    add.values = vec![2.0, 7.6];
+    if let Ok(expr) = syn::parse_str("a + b") {
+        add.expr = expr;
     }
+    let add = snarl.insert_node(pos2(300.0, 70.0), DemoNode::ExprNode(add));
+    let sink1 = snarl.insert_node(pos2(560.0, 90.0), DemoNode::Sink);
+
+    snarl.connect(OutPinId { node: c1, output: 0 }, InPinId { node: add, input: 1 });
+    snarl.connect(OutPinId { node: c2, output: 0 }, InPinId { node: add, input: 2 });
+    snarl.connect(OutPinId { node: add, output: 0 }, InPinId { node: sink1, input: 0 });
+
+    // Row 2: a string label feeding a sink.
+    let s1 = snarl.insert_node(pos2(40.0, 320.0), DemoNode::String("hello".to_owned()));
+    let sink2 = snarl.insert_node(pos2(300.0, 320.0), DemoNode::Sink);
+    snarl.connect(OutPinId { node: s1, output: 0 }, InPinId { node: sink2, input: 0 });
+
+    // Row 3: a constant feeding the X of a Vec3 -> Sink.
+    let c3 = snarl.insert_node(pos2(40.0, 470.0), DemoNode::Number(-0.8));
+    let vec = snarl.insert_node(pos2(300.0, 450.0), DemoNode::Vec3([-0.8, 0.0, 0.0]));
+    let sink3 = snarl.insert_node(pos2(560.0, 470.0), DemoNode::Sink);
+    snarl.connect(OutPinId { node: c3, output: 0 }, InPinId { node: vec, input: 0 });
+    snarl.connect(OutPinId { node: vec, output: 0 }, InPinId { node: sink3, input: 0 });
+
+    snarl
+}
+
+fn default_style() -> SnarlStyle {
+    // The "Graph Editor" appearance (dark node surfaces, edge pins, dotted
+    // background, thin wires) is now the library default, so the demo simply
+    // uses it as-is. Per-node header tints and pin type colors are still
+    // applied by `DemoViewer`.
+    SnarlStyle::new()
 }
 
 impl DemoApp {
     pub fn new(cx: &CreationContext) -> Self {
         egui_extras::install_image_loaders(&cx.egui_ctx);
 
-        cx.egui_ctx
-            .global_style_mut(|style| style.animation_time *= 10.0);
+        cx.egui_ctx.set_theme(egui::Theme::Dark);
+        cx.egui_ctx.global_style_mut(|style| {
+            style.animation_time *= 10.0;
 
-        let snarl = cx.storage.map_or_else(Snarl::new, |storage| {
+            // Match the design's near-black panels and muted text.
+            let v = &mut style.visuals;
+            v.panel_fill = Color32::from_rgb(0x16, 0x19, 0x20);
+            v.window_fill = Color32::from_rgb(0x1a, 0x1d, 0x23);
+            v.extreme_bg_color = Color32::from_rgb(0x19, 0x1d, 0x24);
+            v.override_text_color = Some(Color32::from_rgb(0xcf, 0xd4, 0xdc));
+            v.widgets.noninteractive.bg_stroke.color = Color32::from_rgb(0x22, 0x26, 0x2d);
+        });
+
+        let snarl = cx.storage.map_or_else(default_snarl, |storage| {
             storage
                 .get_string("snarl")
                 .and_then(|snarl| serde_json::from_str(&snarl).ok())
-                .unwrap_or_default()
+                .unwrap_or_else(default_snarl)
         });
         // let snarl = Snarl::new();
 
@@ -1009,6 +1149,34 @@ impl App for DemoApp {
                 if ui.button("Clear All").clicked() {
                     self.snarl = Snarl::default();
                 }
+
+                ui.separator();
+                ui.label(
+                    egui::RichText::new("graph_ui_rs")
+                        .strong()
+                        .color(Color32::from_rgb(0xcf, 0xd4, 0xdc)),
+                );
+                ui.label(
+                    egui::RichText::new("right-click the canvas for the node menu")
+                        .small()
+                        .color(Color32::from_rgb(0x64, 0x6c, 0x78)),
+                );
+            });
+
+            // Breadcrumb row, matching the design's "Root" chip.
+            ui.horizontal(|ui| {
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(0x24, 0x33, 0x4d))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(0x3a, 0x55, 0x82)))
+                    .corner_radius(egui::CornerRadius::same(5))
+                    .inner_margin(egui::Margin::symmetric(9, 2))
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("Root")
+                                .small()
+                                .color(Color32::from_rgb(0xcf, 0xe2, 0xff)),
+                        );
+                    });
             });
         });
 
@@ -1072,8 +1240,8 @@ impl App for DemoApp {
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([400.0, 300.0])
-            .with_min_inner_size([300.0, 220.0]),
+            .with_inner_size([1280.0, 800.0])
+            .with_min_inner_size([600.0, 400.0]),
         ..Default::default()
     };
 
